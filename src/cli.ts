@@ -3,6 +3,7 @@ import './prod-env.js';
 import { parseArgs } from 'node:util';
 import { existsSync } from 'node:fs';
 import { discoverEndpoint, probe, realEnv, type Endpoint } from './cdp/discovery.js';
+import { closeWslRelays, setWslRelayEnabled } from './cdp/relay.js';
 import { listPages, attachPage } from './cdp/targets.js';
 import { BrowserSession } from './cdp/browser.js';
 import type { ProfileMode } from './browser/launch.js';
@@ -38,7 +39,10 @@ your existing one.
 
 Start your browser with --remote-debugging-port=9222 first.
 Note: Chrome/Edge 136+ ignore that flag on the default profile;
-add --user-data-dir=<separate dir> for those browsers.`;
+add --user-data-dir=<separate dir> for those browsers.
+
+Under WSL, Windows browsers are reached through an automatic interop
+relay when the port is not directly reachable; --no-wsl-relay disables it.`;
 
 function formatNet(e: NetworkEntry): string {
   const status = e.error ? `FAIL ${e.error}` : String(e.status ?? '?');
@@ -94,6 +98,7 @@ async function runTui(ep: Endpoint | null, port: number, extraPaths: string[], i
     });
   } finally {
     await liveHost?.close().catch(() => {});
+    await closeWslRelays();
   }
   return 0;
 }
@@ -138,9 +143,11 @@ async function main(): Promise<number> {
       restore: { type: 'string' },
       archive: { type: 'string' },
       mcp: { type: 'boolean', default: false },
+    'no-wsl-relay': { type: 'boolean', default: false },
       help: { type: 'boolean', default: false },
     },
   });
+  if (values['no-wsl-relay']) setWslRelayEnabled(false);
   if (values.help) {
     console.log(HELP);
     return 0;
@@ -311,6 +318,7 @@ async function main(): Promise<number> {
   });
   await liveHost?.close().catch(() => {});
   await session.close();
+  await closeWslRelays();
   if (session.sessionDir) console.log(`session saved: ${session.sessionDir}`);
   return 0;
 }

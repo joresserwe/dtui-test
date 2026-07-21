@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { probe } from '../src/cdp/discovery.js';
-import { launchBrowser, ProfileRestrictedError, realLaunchEnv, type LaunchEnv } from '../src/browser/launch.js';
+import { launchBrowser, ProfileRestrictedError, WslLoopbackError, realLaunchEnv, type LaunchEnv } from '../src/browser/launch.js';
+import type { WslRelayHooks } from '../src/cdp/relay.js';
 
 const FAKE = fileURLToPath(new URL('./helpers/fake-browser.js', import.meta.url));
 const children: ChildProcess[] = [];
@@ -91,6 +92,63 @@ test('timeoutMs of zero still probes once', async () => {
   const counting = { ...env, probe: async (h: string, p: number) => { probes++; return probe(h, p, fetch); } };
   await expect(launchBrowser(CAND, { port: 19228, profile: 'tool', timeoutMs: 0 }, counting)).rejects.toThrow();
   expect(probes).toBeGreaterThanOrEqual(1);
+});
+
+const WSL_CAND = { ...CAND, viaWsl: true };
+
+const relayHooks = (overrides: Partial<WslRelayHooks> = {}): WslRelayHooks => ({
+  available: () => true,
+  windowsLoopbackListening: async () => true,
+  ensure: async () => ({ port: 0, close: async () => {} }),
+  ...overrides,
+});
+
+test('viaWsl candidate resolves through the relay when direct probes fail', async () => {
+  const { env } = testEnv({ FAKE_NO_PORT: '1' });
+  const relayEp = { host: '127.0.0.1', port: 45678, browser: 'MockChrome/1.0', via: 'wsl-relay' as const, targetPort: 19231 };
+  let calls = 0;
+  const e: LaunchEnv = { ...env, wslRelay: relayHooks(), relayConnect: async () => { calls++; return relayEp; } };
+  const ep = await launchBrowser(WSL_CAND, { port: 19231, profile: 'tool', timeoutMs: 5000 }, e);
+  expect(ep).toBe(relayEp);
+  expect(calls).toBe(1);
+});
+
+test('windows listening without relay connectivity raises WslLoopbackError in both profile modes', async () => {
+  for (const profile of ['existing', 'tool'] as const) {
+    const { env } = testEnv({ FAKE_NO_PORT: '1' });
+    const e: LaunchEnv = { ...env, wslRelay: relayHooks(), relayConnect: async () => null };
+    const err = await launchBrowser(WSL_CAND, { port: 19232, profile, timeoutMs: 400 }, e).then(() => null, (x: unknown) => x);
+    expect(err).toBeInstanceOf(WslLoopbackError);
+    expect((err as Error).name).toBe('WslLoopbackError');
+  }
+});
+
+test('viaWsl candidate without a windows listener keeps ProfileRestrictedError', async () => {
+  const { env } = testEnv({ FAKE_NO_PORT: '1' });
+  let connects = 0;
+  const e: LaunchEnv = {
+    ...env,
+    wslRelay: relayHooks({ windowsLoopbackListening: async () => false }),
+    relayConnect: async () => { connects++; return null; },
+  };
+  await expect(launchBrowser(WSL_CAND, { port: 19233, profile: 'existing', timeoutMs: 400 }, e))
+    .rejects.toThrowError(ProfileRestrictedError);
+  expect(connects).toBe(0);
+});
+
+test('non-WSL candidate never touches the relay hooks', async () => {
+  const { env } = testEnv({ FAKE_NO_PORT: '1' });
+  let touched = false;
+  const e: LaunchEnv = {
+    ...env,
+    wslRelay: relayHooks({
+      available: () => { touched = true; return true; },
+      windowsLoopbackListening: async () => { touched = true; return true; },
+    }),
+    relayConnect: async () => { touched = true; return null; },
+  };
+  await expect(launchBrowser(CAND, { port: 19234, profile: 'tool', timeoutMs: 300 }, e)).rejects.toThrow(/Fake Chrome/);
+  expect(touched).toBe(false);
 });
 
 test('WSL toolProfileDir resolves a real Windows LocalAppData path', async ctx => {

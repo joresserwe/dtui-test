@@ -1,17 +1,21 @@
 import { readFile } from 'node:fs/promises';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import { realWslRelayHooks, type WslRelayHooks } from './relay.js';
 
 export interface Endpoint {
   host: string;
   port: number;
   browser: string;
+  via?: 'wsl-relay';
+  targetPort?: number;
 }
 
 export interface DiscoveryEnv {
   isWsl(): Promise<boolean>;
   defaultGateway(): Promise<string | null>;
   fetchFn: typeof fetch;
+  wslRelay?: WslRelayHooks;
 }
 
 export function realEnv(): DiscoveryEnv {
@@ -33,6 +37,7 @@ export function realEnv(): DiscoveryEnv {
       }
     },
     fetchFn: fetch,
+    wslRelay: realWslRelayHooks(),
   };
 }
 
@@ -45,9 +50,9 @@ export async function candidateHosts(env: DiscoveryEnv): Promise<string[]> {
   return hosts;
 }
 
-export async function probe(host: string, port: number, fetchFn: typeof fetch): Promise<Endpoint | null> {
+export async function probe(host: string, port: number, fetchFn: typeof fetch, timeoutMs = 1500): Promise<Endpoint | null> {
   try {
-    const res = await fetchFn(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(1500) });
+    const res = await fetchFn(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) return null;
     const v = (await res.json()) as { Browser?: string };
     return { host, port, browser: v.Browser ?? 'unknown' };
@@ -56,12 +61,31 @@ export async function probe(host: string, port: number, fetchFn: typeof fetch): 
   }
 }
 
+// The first connection through a fresh relay pays its spawn cost (~1s),
+// hence the longer probe timeout.
+export async function relayEndpoint(port: number, fetchFn: typeof fetch, hooks: WslRelayHooks): Promise<Endpoint | null> {
+  try {
+    const relay = await hooks.ensure(port);
+    const ep = await probe('127.0.0.1', relay.port, fetchFn, 5000);
+    return ep ? { ...ep, via: 'wsl-relay', targetPort: port } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function relayFallback(port: number, env: DiscoveryEnv): Promise<Endpoint | null> {
+  const relay = env.wslRelay;
+  if (!relay?.available() || !(await env.isWsl())) return null;
+  if (!(await relay.windowsLoopbackListening(port))) return null;
+  return relayEndpoint(port, env.fetchFn, relay);
+}
+
 export async function discoverEndpoint(port: number, env: DiscoveryEnv = realEnv()): Promise<Endpoint | null> {
   for (const host of await candidateHosts(env)) {
     const ep = await probe(host, port, env.fetchFn);
     if (ep) return ep;
   }
-  return null;
+  return relayFallback(port, env);
 }
 
 export async function scanEndpoints(ports: number[], env: DiscoveryEnv = realEnv()): Promise<Endpoint[]> {
@@ -71,12 +95,17 @@ export async function scanEndpoints(ports: number[], env: DiscoveryEnv = realEnv
   );
   const out: Endpoint[] = [];
   const seen = new Set<string>();
-  for (const ep of results) {
-    if (!ep) continue;
+  const add = (ep: Endpoint | null) => {
+    if (!ep) return;
     const key = `${ep.host}:${ep.port}`;
-    if (seen.has(key)) continue;
+    if (seen.has(key)) return;
     seen.add(key);
     out.push(ep);
+  };
+  for (const ep of results) add(ep);
+  for (const port of new Set(ports)) {
+    if (out.some(ep => ep.port === port || ep.targetPort === port)) continue;
+    add(await relayFallback(port, env));
   }
   return out;
 }

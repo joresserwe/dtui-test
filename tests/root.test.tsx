@@ -9,7 +9,7 @@ import { render as inkRender } from 'ink';
 import { MockCdp } from './helpers/mock-cdp.js';
 import { Root } from '../src/tui/Root.js';
 import { DebugSession } from '../src/engine.js';
-import { ProfileRestrictedError, type LaunchOptions } from '../src/browser/launch.js';
+import { ProfileRestrictedError, WslLoopbackError, type LaunchOptions } from '../src/browser/launch.js';
 import type { BrowserCandidate } from '../src/browser/detect.js';
 import { waitForFrame } from './helpers/wait-for.js';
 
@@ -149,7 +149,7 @@ test('initialProfile presets the picker profile mode', async () => {
 
 test('no endpoint shows picker; Enter launches selection with profile', async () => {
   const calls: Array<[string, LaunchOptions]> = [];
-  const { lastFrame, stdin } = render(
+  const { lastFrame, stdin, unmount } = render(
     <Root
       initialEndpoint={null}
       port={9250}
@@ -169,6 +169,7 @@ test('no endpoint shows picker; Enter launches selection with profile', async ()
   stdin.write('\r');
   await waitForFrame(lastFrame, 'MockChrome/1.0');
   expect(calls).toEqual([['Comet', { port: 9250, profile: 'tool' }]]);
+  unmount();
 });
 
 test('ProfileRestrictedError auto-falls back to the tool profile', async () => {
@@ -195,14 +196,40 @@ test('ProfileRestrictedError auto-falls back to the tool profile', async () => {
   await waitForFrame(lastFrame, 'MockChrome/1.0');
 });
 
-test('viaWsl candidate skips the tool-profile retry and points at the README', async () => {
-  let launches = 0;
+test('viaWsl candidate also auto-falls back to the tool profile', async () => {
+  const calls: string[] = [];
   const { lastFrame, stdin } = render(
     <Root
       initialEndpoint={null}
       port={9256}
       detect={async () => CANDS}
-      launch={async () => { launches++; throw new ProfileRestrictedError(); }}
+      launch={async (_c, o) => {
+        calls.push(o.profile);
+        if (o.profile === 'existing') throw new ProfileRestrictedError();
+        return ep();
+      }}
+      makeBrowser={async () => null}
+      scan={noScan}
+      appProps={appProps}
+    />,
+  );
+  await sleep(50);
+  stdin.write('j');
+  await sleep(30);
+  stdin.write('\r');
+  await sleep(300);
+  expect(calls).toEqual(['existing', 'tool']);
+  await waitForFrame(lastFrame, 'MockChrome/1.0');
+});
+
+test('WslLoopbackError surfaces its full message in the picker', async () => {
+  let launches = 0;
+  const { lastFrame, stdin } = render(
+    <Root
+      initialEndpoint={null}
+      port={9257}
+      detect={async () => CANDS}
+      launch={async () => { launches++; throw new WslLoopbackError(); }}
       makeBrowser={async () => null}
       scan={noScan}
       appProps={appProps}
@@ -214,7 +241,9 @@ test('viaWsl candidate skips the tool-profile retry and points at the README', a
   stdin.write('\r');
   await sleep(200);
   expect(launches).toBe(1);
-  expect(lastFrame()).toContain('WSL');
+  const flat = lastFrame()!.split('\n').map(l => l.replace(/[│╭-╰─]/g, '').trim()).join(' ').replace(/\s+/g, ' ');
+  expect(flat).toContain(new WslLoopbackError().message);
+  expect(lastFrame()).toContain('Pick a browser');
 });
 
 test('burst key chunks move the selection per character', async () => {

@@ -711,6 +711,8 @@ const MESSAGES = {
   'root.launching': { ko: '{name} 실행 중 ({profile} 프로필)…', en: 'launching {name} ({profile} profile)…' },
   'root.retryToolProfile': { ko: '기존 프로필 사용 불가 — {name}을(를) 도구 프로필로 재시도…', en: 'existing profile blocked — retrying {name} with the tool profile…' },
 
+  'root.viaRelay': { ko: '자동 릴레이 경유', en: 'via automatic relay' },
+
   'archive.offline': { ko: '오프라인 아카이브', en: 'offline archive' },
   'archive.tools': { ko: '도구', en: 'tools' },
   'archive.window': { ko: '시간창', en: 'window' },

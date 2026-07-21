@@ -108,12 +108,6 @@ export function Root({ initialEndpoint, port, initialUrl, initialProfile = 'exis
       setBusy(undefined);
       setEndpoint(ep);
     } catch (e) {
-      if (e instanceof ProfileRestrictedError && c.viaWsl) {
-        setBusy(undefined);
-        setError(`${e.message} If this is a Windows browser under WSL NAT, see the README's WSL2 section.`);
-        busyRef.current = false;
-        return;
-      }
       if (e instanceof ProfileRestrictedError && profile === 'existing') {
         try {
           setBusy(t('root.retryToolProfile', { name: c.name }));
@@ -159,7 +153,7 @@ export function Root({ initialEndpoint, port, initialUrl, initialProfile = 'exis
     );
   }
   if (endpoint) {
-    return <Text dimColor>{t('root.connecting')}</Text>;
+    return <Text dimColor>{t('root.connecting')}{endpoint.via === 'wsl-relay' ? ` · ${t('root.viaRelay')}` : ''}</Text>;
   }
   if (!candidates) {
     return <Text dimColor>{t('root.scanning')}</Text>;

@@ -51,12 +51,25 @@ export function Picker({ candidates, selected, profile, busy, error }: PickerPro
         {'  '}profile: <Text color="cyan">{profile}</Text>
         <Text dimColor>{profile === 'existing' ? ' (keeps logins; Chrome/Edge 136+ may block it)' : ' (isolated, always works)'}</Text>
       </Text>
-      {busy ? <Text color="yellow">{busy}</Text> : null}
-      {error ? <Text color="red" wrap="wrap">{error}</Text> : null}
-      {candidates.some(c => c.viaWsl) ? (
-        <Text dimColor wrap="truncate">(windows) browsers need WSL mirrored networking or a portproxy — see README</Text>
+      {error ? (
+        <Box flexDirection="column" borderStyle="round" borderColor="red" paddingX={1}>
+          <Text bold color="red" wrap="truncate">launch failed</Text>
+          <Text wrap="wrap">{error}</Text>
+        </Box>
+      ) : busy ? (
+        <Box flexDirection="column">
+          <Text color="yellow" wrap="wrap">⟳ {busy}</Text>
+          <Text dimColor wrap="wrap">  a first launch can take a few seconds</Text>
+        </Box>
+      ) : candidates.length > 0 ? (
+        <Box flexDirection="column">
+          <Text dimColor wrap="wrap">⏎ starts the selected browser with its DevTools port open and attaches to it.</Text>
+          {candidates.some(c => c.viaWsl) ? (
+            <Text dimColor wrap="wrap">(windows) browsers connect through an automatic relay.</Text>
+          ) : null}
+        </Box>
       ) : null}
-      <Text dimColor>j/k move · p profile · ⏎ launch · q quit</Text>
+      <Text dimColor>{candidates.length > 0 ? 'j/k move · p profile · ⏎ launch · q quit' : 'q quit'}</Text>
     </Box>
   );
 }
