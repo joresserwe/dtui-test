@@ -241,7 +241,7 @@ test('WslLoopbackError surfaces its full message in the picker', async () => {
   stdin.write('\r');
   await sleep(200);
   expect(launches).toBe(1);
-  const flat = lastFrame()!.split('\n').map(l => l.replace(/[│╭-╰─]/g, '').trim()).join(' ').replace(/\s+/g, ' ');
+  const flat = lastFrame()!.split('\n').map(l => l.replace(/[\u2502\u256D\u256E\u2570\u256F\u2500]/g, '').trim()).join(' ').replace(/\s+/g, ' ');
   expect(flat).toContain(new WslLoopbackError().message);
   expect(lastFrame()).toContain('Pick a browser');
 });

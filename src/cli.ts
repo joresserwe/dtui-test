@@ -143,7 +143,7 @@ async function main(): Promise<number> {
       restore: { type: 'string' },
       archive: { type: 'string' },
       mcp: { type: 'boolean', default: false },
-    'no-wsl-relay': { type: 'boolean', default: false },
+      'no-wsl-relay': { type: 'boolean', default: false },
       help: { type: 'boolean', default: false },
     },
   });

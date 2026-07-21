@@ -1,7 +1,34 @@
-import { execFile, spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { createServer, type Server, type Socket } from 'node:net';
-import { promisify } from 'node:util';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { createServer, type Server } from 'node:net';
+
+const PS_PATH = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
+const CURL_PATH = '/mnt/c/Windows/System32/curl.exe';
+
+// $ProgressPreference silences PS 5.1 CLIXML progress noise on stderr.
+// WaitAny, not WaitAll: the surviving copy pump only unblocks via the closes.
+const relayScript = (host: string, port: number) => `
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+try {
+  $client = New-Object System.Net.Sockets.TcpClient
+  $client.NoDelay = $true
+  $client.Connect('${host}', ${port})
+  $net = $client.GetStream()
+  $in = [Console]::OpenStandardInput()
+  $out = [Console]::OpenStandardOutput()
+  $up = $in.CopyToAsync($net, 65536)
+  $down = $net.CopyToAsync($out, 65536)
+  [System.Threading.Tasks.Task]::WaitAny(@($up, $down)) | Out-Null
+  try { $out.Flush() } catch {}
+  try { $client.Close() } catch {}
+  try { $in.Close() } catch {}
+  try { $out.Close() } catch {}
+} catch {
+  exit 1
+}
+exit 0
+`;
 
 export interface WslRelay {
   port: number;
@@ -10,122 +37,121 @@ export interface WslRelay {
 
 export interface WslRelayHooks {
   available(): boolean;
-  windowsLoopbackListening(port: number): Promise<boolean>;
-  ensure(targetPort: number): Promise<WslRelay>;
+  windowsLoopbackListening(port: number, timeoutMs?: number): Promise<boolean>;
+  ensure(port: number): Promise<WslRelay>;
+}
+
+export interface RelayEnv {
+  spawnRelay(targetHost: string, targetPort: number): ChildProcess;
+}
+
+export function realRelayEnv(): RelayEnv {
+  return {
+    spawnRelay(targetHost, targetPort) {
+      const encoded = Buffer.from(relayScript(targetHost, targetPort), 'utf16le').toString('base64');
+      return spawn(PS_PATH, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], {
+        stdio: ['pipe', 'pipe', 'ignore'],
+      });
+    },
+  };
 }
 
 let enabled = true;
 
-export function setWslRelayEnabled(on: boolean): void {
-  enabled = on;
+export function setWslRelayEnabled(v: boolean): void {
+  enabled = v;
 }
 
-let wsl: boolean | undefined;
+const active = new Map<number, Promise<WslRelay>>();
 
-function underWsl(): boolean {
-  if (wsl === undefined) {
-    try {
-      wsl = process.platform === 'linux' && /microsoft/i.test(readFileSync('/proc/version', 'utf8'));
-    } catch {
-      wsl = false;
-    }
-  }
-  return wsl;
-}
-
-function encodeCommand(script: string): string {
-  return Buffer.from(script, 'utf16le').toString('base64');
-}
-
-const PROBE = (port: number) => `
-$c = New-Object System.Net.Sockets.TcpClient
-try { $c.Connect('127.0.0.1', ${port}); 'listening' } catch { 'closed' } finally { $c.Dispose() }`;
-
-const BRIDGE = (port: number) => `
-$ErrorActionPreference = 'Stop'
-$c = New-Object System.Net.Sockets.TcpClient
-$c.NoDelay = $true
-$c.Connect('127.0.0.1', ${port})
-$s = $c.GetStream()
-$down = $s.CopyToAsync([Console]::OpenStandardOutput())
-$up = [Console]::OpenStandardInput().CopyToAsync($s)
-[System.Threading.Tasks.Task]::WaitAny(@($down, $up)) | Out-Null
-$c.Close()`;
-
-const relays = new Map<number, Promise<WslRelay>>();
-
-function bridge(socket: Socket, targetPort: number): void {
-  const child = spawn('powershell.exe', ['-NoProfile', '-EncodedCommand', encodeCommand(BRIDGE(targetPort))], {
-    stdio: ['pipe', 'pipe', 'ignore'],
-  });
-  socket.on('error', () => child.kill());
-  child.on('error', () => socket.destroy());
-  child.stdin.on('error', () => {});
-  child.stdout.on('error', () => {});
-  child.once('exit', () => socket.destroy());
-  socket.once('close', () => child.kill());
-  socket.pipe(child.stdin);
-  child.stdout.pipe(socket);
-}
-
-async function listen(targetPort: number): Promise<WslRelay> {
-  const sockets = new Set<Socket>();
+export async function startWslRelay(targetPort: number, env: RelayEnv = realRelayEnv()): Promise<WslRelay> {
+  const open = new Set<import('node:net').Socket>();
   const server: Server = createServer(socket => {
-    sockets.add(socket);
+    open.add(socket);
+    socket.once('close', () => open.delete(socket));
     socket.setNoDelay(true);
-    socket.once('close', () => sockets.delete(socket));
-    bridge(socket, targetPort);
-  });
-  server.unref();
-  const port = await new Promise<number>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const addr = server.address();
-      if (addr && typeof addr === 'object') resolve(addr.port);
-      else reject(new Error('relay did not bind a port'));
+    const child = env.spawnRelay('127.0.0.1', targetPort);
+    socket.on('error', () => {});
+    child.stdin?.on('error', () => {});
+    child.stdout?.on('error', () => {});
+    socket.pipe(child.stdin!);
+    child.stdout!.pipe(socket);
+    socket.on('close', () => {
+      try {
+        child.stdin?.end();
+      } catch {}
+    });
+    child.once('exit', () => {
+      try {
+        socket.end();
+      } catch {}
+    });
+    child.once('error', () => {
+      socket.destroy();
     });
   });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  server.unref();
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
   return {
     port,
     close: () =>
       new Promise<void>(resolve => {
-        for (const s of sockets) s.destroy();
         server.close(() => resolve());
+        for (const socket of open) socket.destroy();
       }),
   };
 }
 
-export function realWslRelayHooks(): WslRelayHooks {
-  return {
-    available: () => enabled && underWsl(),
-    async windowsLoopbackListening(port) {
-      try {
-        const { stdout } = await promisify(execFile)(
-          'powershell.exe',
-          ['-NoProfile', '-EncodedCommand', encodeCommand(PROBE(port))],
-          { timeout: 5000 },
-        );
-        return stdout.includes('listening');
-      } catch {
-        return false;
-      }
-    },
-    ensure(targetPort) {
-      let relay = relays.get(targetPort);
-      if (!relay) {
-        relay = listen(targetPort).catch(e => {
-          relays.delete(targetPort);
-          throw e;
-        });
-        relays.set(targetPort, relay);
-      }
-      return relay;
-    },
-  };
+export function ensureWslRelay(targetPort: number, env: RelayEnv = realRelayEnv()): Promise<WslRelay> {
+  let relay = active.get(targetPort);
+  if (!relay) {
+    relay = startWslRelay(targetPort, env);
+    relay.catch(() => active.delete(targetPort));
+    active.set(targetPort, relay);
+  }
+  return relay;
 }
 
 export async function closeWslRelays(): Promise<void> {
-  const pending = [...relays.values()];
-  relays.clear();
+  const pending = [...active.values()];
+  active.clear();
   await Promise.all(pending.map(p => p.then(r => r.close()).catch(() => {})));
+}
+
+export function realWslRelayHooks(): WslRelayHooks {
+  return {
+    available() {
+      return enabled && process.env.DTUI_NO_WSL_RELAY === undefined && existsSync(PS_PATH);
+    },
+    windowsLoopbackListening(port, timeoutMs = 2000) {
+      const secs = Math.max(1, Math.ceil(timeoutMs / 1000));
+      const url = `http://127.0.0.1:${port}/json/version`;
+      const [cmd, args] = existsSync(CURL_PATH)
+        ? [CURL_PATH, ['-sf', '--max-time', String(secs), url]]
+        : [PS_PATH, ['-NoProfile', '-NonInteractive', '-Command', `try{Invoke-WebRequest -UseBasicParsing -TimeoutSec ${secs} '${url}'|Out-Null;exit 0}catch{exit 1}`]];
+      return new Promise(resolve => {
+        const child = spawn(cmd, args, { stdio: 'ignore' });
+        const timer = setTimeout(() => {
+          child.kill();
+          resolve(false);
+        }, timeoutMs + 3000);
+        timer.unref?.();
+        child.once('error', () => {
+          clearTimeout(timer);
+          resolve(false);
+        });
+        child.once('exit', code => {
+          clearTimeout(timer);
+          resolve(code === 0);
+        });
+      });
+    },
+    ensure: port => ensureWslRelay(port),
+  };
 }

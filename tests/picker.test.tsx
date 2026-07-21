@@ -9,7 +9,7 @@ const candidates = [
 ];
 
 const flatten = (frame: string) =>
-  frame.split('\n').map(l => l.replace(/[│╭-╰─]/g, '').trim()).join(' ').replace(/\s+/g, ' ');
+  frame.split('\n').map(l => l.replace(/[\u2502\u256D\u256E\u2570\u256F\u2500]/g, '').trim()).join(' ').replace(/\s+/g, ' ');
 
 test('lists candidates with paths and wsl marker', () => {
   const { lastFrame } = render(<Picker candidates={candidates} selected={0} profile="existing" />);

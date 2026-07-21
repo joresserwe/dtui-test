@@ -58,7 +58,7 @@ export function Picker({ candidates, selected, profile, busy, error }: PickerPro
         </Box>
       ) : busy ? (
         <Box flexDirection="column">
-          <Text color="yellow" wrap="wrap">⟳ {busy}</Text>
+          <Text color="yellow" wrap="wrap">{'\u25CC'} {busy}</Text>
           <Text dimColor wrap="wrap">  a first launch can take a few seconds</Text>
         </Box>
       ) : candidates.length > 0 ? (
