@@ -1,0 +1,41 @@
+{
+  "name": "devtools-tui",
+  "version": "0.6.0",
+  "description": "A keyboard-driven terminal UI for debugging web pages over the Chrome DevTools Protocol",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "devtools-tui": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepack": "npm run build",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "clipboardy": "^5.3.1",
+    "ink": "^7.1.0",
+    "lighthouse": "^13.4.0",
+    "react": "^19.2.7",
+    "ws": "^8.21.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/react": "^19.2.17",
+    "@types/ws": "^8.18.1",
+    "ink-testing-library": "^4.0.0",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
